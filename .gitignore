@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
+reports/
+reports_test/
+__pycache__/
+stock_analyse/__pycache__/
+tests/__pycache__/
