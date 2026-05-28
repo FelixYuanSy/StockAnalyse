@@ -45,6 +45,14 @@ tests/
 8. `stock_analyse/ai_advisor.py`
 9. `stock_analyse/html_report.py`
 
+如果你想按文件逐个理解每段代码的意思，请继续看：
+
+```text
+docs/CODE_WALKTHROUGH.md
+```
+
+那份文档会更细，适合一边打开代码一边对照阅读。
+
 ## 3. 一次分析是怎么跑完的
 
 以 `futures:LC2609` 为例：

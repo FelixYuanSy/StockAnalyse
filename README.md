@@ -75,8 +75,9 @@ http://localhost:8501
 3. [系统架构说明](docs/ARCHITECTURE.md)
 4. [数据源说明](docs/DATA_SOURCES.md)
 5. [代码学习指南](docs/CODE_LEARNING_GUIDE.md)
-6. [常见问题排查](docs/TROUBLESHOOTING.md)
-7. [量化升级路线](docs/QUANT_UPGRADE_PLAN.md)
+6. [代码逐文件讲解](docs/CODE_WALKTHROUGH.md)
+7. [常见问题排查](docs/TROUBLESHOOTING.md)
+8. [量化升级路线](docs/QUANT_UPGRADE_PLAN.md)
 
 ## 代码结构
 
