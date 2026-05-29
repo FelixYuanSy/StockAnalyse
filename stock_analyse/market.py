@@ -22,6 +22,8 @@ def china_market_phase(now: datetime | None = None) -> MarketPhase:
 
     if morning_open <= current_time <= morning_close:
         return "盘中"
+    if morning_close < current_time < afternoon_open:
+        return "午间休市"
     if afternoon_open <= current_time <= afternoon_close:
         return "盘中"
     if current_time > afternoon_close:

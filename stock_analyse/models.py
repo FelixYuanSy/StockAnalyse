@@ -8,7 +8,7 @@ AssetType = Literal["stock", "etf", "futures"]
 Action = Literal["买入观察", "谨慎持有", "观望", "减仓防守", "规避"]
 RiskLevel = Literal["低", "中", "高"]
 TrendLabel = Literal["强势上涨", "温和上涨", "震荡", "偏弱下跌", "明显下跌"]
-MarketPhase = Literal["盘中", "盘后", "休市"]
+MarketPhase = Literal["盘中", "午间休市", "盘后", "休市"]
 
 
 @dataclass(frozen=True)

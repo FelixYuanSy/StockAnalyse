@@ -166,7 +166,7 @@ class AkshareDataProvider:
                 if asset_type == "futures":
                     df = self._ak.futures_zh_minute_sina(symbol=code.upper(), period=period)
                 elif asset_type == "etf":
-                    df = self._ak.fund_etf_hist_sina(symbol=self._market_prefixed_symbol(code))
+                    df = self._ak.fund_etf_hist_min_em(symbol=code, period=period, adjust="")
                 else:
                     df = self._ak.stock_zh_a_minute(
                         symbol=self._market_prefixed_symbol(code),
@@ -184,24 +184,22 @@ class AkshareDataProvider:
                 errors.append(f"东方财富分钟线接口失败: {fallback_exc}")
                 raise DataProviderError(f"无法获取 {code} 分钟线: {'; '.join(errors)}") from fallback_exc
 
-        if df.empty:
-            raise DataProviderError(f"分钟线为空: {code}")
-
-        normalized = df.rename(
-            columns={
-                "day": "datetime",
-                "时间": "datetime",
-                "开盘": "open",
-                "收盘": "close",
-                "最高": "high",
-                "最低": "low",
-                "成交量": "volume",
-                "成交额": "amount",
-            }
-        ).copy()
+        normalized = self._normalize_intraday_frame(df, code)
 
         required = ["datetime", "open", "close", "high", "low", "volume"]
         missing = [column for column in required if column not in normalized.columns]
+        if missing and asset_type in {"stock", "etf"}:
+            try:
+                with self._network_context():
+                    df = self._ak.stock_zh_a_minute(
+                        symbol=self._market_prefixed_symbol(code),
+                        period=period,
+                        adjust="",
+                    )
+                normalized = self._normalize_intraday_frame(df, code)
+                missing = [column for column in required if column not in normalized.columns]
+            except Exception as fallback_exc:
+                errors.append(f"Sina通用分钟线接口失败: {fallback_exc}")
         if missing:
             raise DataProviderError(f"分钟线缺少字段: {', '.join(missing)}")
 
@@ -214,6 +212,25 @@ class AkshareDataProvider:
             raise DataProviderError(f"有效分钟线不足 12 条，当前只有 {len(normalized)} 条")
 
         return normalized.reset_index(drop=True)
+
+    def _normalize_intraday_frame(self, df: pd.DataFrame, code: str) -> pd.DataFrame:
+        if df.empty:
+            raise DataProviderError(f"分钟线为空: {code}")
+
+        return df.rename(
+            columns={
+                "day": "datetime",
+                "date": "datetime",
+                "日期": "datetime",
+                "时间": "datetime",
+                "开盘": "open",
+                "收盘": "close",
+                "最高": "high",
+                "最低": "low",
+                "成交量": "volume",
+                "成交额": "amount",
+            }
+        ).copy()
 
     def get_global_news(self, limit: int = 8) -> tuple[NewsItem, ...]:
         try:

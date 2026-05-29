@@ -82,7 +82,7 @@ def analyze_symbol(
         quote = provider.quote_from_history(symbol_code, history, asset_type=asset_type)
         data_warnings.append(f"实时行情获取失败，已使用最新日线收盘数据代替: {exc}")
 
-    if phase == "盘中" and asset_type != "etf":
+    if phase in {"盘中", "午间休市"}:
         try:
             intraday = provider.get_intraday_history(symbol_code, asset_type=asset_type)
         except DataProviderError as exc:
@@ -131,7 +131,7 @@ def analyze_symbol(
         news=stock_news,
     )
 
-    if phase == "盘中":
+    if phase in {"盘中", "午间休市"}:
         global_news = ()
     else:
         try:

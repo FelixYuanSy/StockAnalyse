@@ -91,7 +91,10 @@ class AiAdvisor:
                 "如果 analysis_payload.fundamental_data.quant_context.available 为 true，必须增加“量化因子与历史相似信号”章节。",
                 "必须引用 quant_context.signal.label、factor_score、confidence、factors 和 event_backtest。",
                 "必须说明未来1日/3日/5日相似信号回测的样本数、胜率、平均收益、最大亏损；样本数不足时要降低结论权重。",
-                "不能把轻量回测说成确定预测；必须说明该回测不含交易成本、滑点、样本外验证和仓位管理。",
+                "如果 quant_context.strategy_backtest.available 为 true，必须引用策略型回测：入场规则、止损止盈、交易次数、胜率、平均收益、最大回撤、盈亏比和退出原因。",
+                "如果是股票或ETF的看空信号，策略型回测中的 short 方向只能解释为回避/减仓/对冲参考，不得直接建议普通用户裸做空。",
+                "必须用普通投资者能听懂的语言解释因子综合分、胜率、平均收益、盈亏比、最大回撤分别是什么意思，不要只罗列数字。",
+                "不能把轻量回测说成确定预测；必须说明该回测已扣除简化交易成本，但不含真实滑点、盘口冲击、样本外验证和组合仓位管理。",
                 "最终仓位建议必须同时考虑AI判断、本地技术结构、量化因子分和回测胜率。",
             ],
             "output_requirements": [

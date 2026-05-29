@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from numbers import Number
+from typing import Any
 
 import pandas as pd
 
@@ -52,16 +53,9 @@ class StockAnalyzer:
             reasons.append(f"全球消息面: {global_news_reason}")
             score += max(-8, min(8, global_news_score))
 
-        recent_20 = data.tail(20)
-        recent_60 = data.tail(60)
-        support_levels = (
-            round(float(recent_20["low"].min()), 2),
-            round(float(recent_60["low"].min()), 2),
-        )
-        resistance_levels = (
-            round(float(recent_20["high"].max()), 2),
-            round(float(recent_60["high"].max()), 2),
-        )
+        level_context = self._build_level_context(data, quote, intraday)
+        support_levels = tuple(level_context["display_supports"][:2])
+        resistance_levels = tuple(level_context["display_resistances"][:2])
         enriched_fundamental_data = dict(fundamental_data or {})
         enriched_fundamental_data["quant_context"] = build_quant_context(
             history=data,
@@ -95,7 +89,9 @@ class StockAnalyzer:
 
         return AnalysisResult(
             quote=quote,
-            data_source="实时行情" if not data_warnings else "最新日线",
+            data_source="最新日线"
+            if any(str(item).startswith("实时行情获取失败") for item in data_warnings)
+            else "实时行情",
             market_phase=market_phase,
             trend=trend,
             risk_level=risk_level,
@@ -111,6 +107,7 @@ class StockAnalyzer:
             market_data={
                 "daily_kline_tail": self._records(data.tail(30), "date"),
                 "intraday_kline_tail": self._records(intraday.tail(24), "datetime") if intraday is not None else [],
+                "level_context": level_context,
             },
             fundamental_data=enriched_fundamental_data,
         )
@@ -233,11 +230,13 @@ class StockAnalyzer:
         ]
 
         intraday_score = 0
-        if market_phase == "盘中" and intraday is not None and len(intraday) >= 12:
+        if market_phase in {"盘中", "午间休市"} and intraday is not None and len(intraday) >= 12:
             intraday_score, intraday_reason = self._intraday_score(intraday)
             evidence.append(intraday_reason)
 
-        combined = score + intraday_score + stock_news_score + (0 if market_phase == "盘中" else global_news_score)
+        combined = score + intraday_score + stock_news_score + (
+            0 if market_phase in {"盘中", "午间休市"} else global_news_score
+        )
         confidence = max(35, min(85, 45 + abs(combined - 50) // 2))
 
         if combined >= 68:
@@ -269,7 +268,12 @@ class StockAnalyzer:
                 "以规避或轻仓观察为主。"
             )
 
-        horizon = "盘中未来 30-60 分钟" if market_phase == "盘中" else "下一交易日"
+        if market_phase == "盘中":
+            horizon = "盘中未来 30-60 分钟"
+        elif market_phase == "午间休市":
+            horizon = "午后未来 30-60 分钟"
+        else:
+            horizon = "下一交易日"
         invalidation = (
             f"若价格有效跌破 {support_levels[0]:.2f}，当前预测失效并转为防守。"
             if bias in {"偏多", "震荡偏多"}
@@ -328,6 +332,193 @@ class StockAnalyzer:
             f"最新价 {'高于' if last_close > vwap else '低于'}短线 VWAP {vwap:.2f}。"
         )
         return score, reason
+
+    @staticmethod
+    def _build_level_context(
+        data: pd.DataFrame,
+        quote: StockQuote,
+        intraday: pd.DataFrame | None,
+    ) -> dict[str, Any]:
+        latest = data.iloc[-1]
+        previous = data.iloc[-2] if len(data) >= 2 else latest
+        recent_5 = data.tail(5)
+        recent_10 = data.tail(10)
+        recent_20 = data.tail(20)
+        recent_60 = data.tail(60)
+        price = float(quote.price)
+
+        support_candidates = [
+            ("最新日线低点", latest.get("low"), "short"),
+            ("上一收盘价", previous.get("close"), "short"),
+            ("MA5", latest.get("ma5"), "short"),
+            ("MA10", latest.get("ma10"), "short"),
+            ("近5日低点", recent_5["low"].min(), "short"),
+            ("近10日低点", recent_10["low"].min(), "short"),
+            ("MA20", latest.get("ma20"), "swing"),
+            ("布林下轨", latest.get("boll_lower"), "swing"),
+            ("近20日低点", recent_20["low"].min(), "swing"),
+            ("MA60", latest.get("ma60"), "extreme"),
+            ("近60日低点", recent_60["low"].min(), "extreme"),
+        ]
+        resistance_candidates = [
+            ("最新日线高点", latest.get("high"), "short"),
+            ("上一收盘价", previous.get("close"), "short"),
+            ("MA5", latest.get("ma5"), "short"),
+            ("MA10", latest.get("ma10"), "short"),
+            ("近5日高点", recent_5["high"].max(), "short"),
+            ("近10日高点", recent_10["high"].max(), "short"),
+            ("MA20", latest.get("ma20"), "swing"),
+            ("布林上轨", latest.get("boll_upper"), "swing"),
+            ("近20日高点", recent_20["high"].max(), "swing"),
+            ("MA60", latest.get("ma60"), "extreme"),
+            ("近60日高点", recent_60["high"].max(), "extreme"),
+        ]
+
+        if intraday is not None and not intraday.empty:
+            intraday_low = intraday["low"].min()
+            intraday_high = intraday["high"].max()
+            intraday_vwap = StockAnalyzer._vwap(intraday)
+            support_candidates.extend(
+                [
+                    ("日内低点", intraday_low, "intraday"),
+                    ("日内VWAP", intraday_vwap, "intraday"),
+                ]
+            )
+            resistance_candidates.extend(
+                [
+                    ("日内高点", intraday_high, "intraday"),
+                    ("日内VWAP", intraday_vwap, "intraday"),
+                ]
+            )
+
+        supports = StockAnalyzer._levels_around_price(price, support_candidates, below=True)
+        resistances = StockAnalyzer._levels_around_price(price, resistance_candidates, below=False)
+        display_supports = StockAnalyzer._display_levels(price, supports, support_candidates, below=True)
+        display_resistances = StockAnalyzer._display_levels(price, resistances, resistance_candidates, below=False)
+
+        return {
+            "price": round(price, 4),
+            "short_term_supports": [item for item in supports if item["scope"] in {"intraday", "short"}][:5],
+            "short_term_resistances": [item for item in resistances if item["scope"] in {"intraday", "short"}][:5],
+            "swing_supports": [item for item in supports if item["scope"] == "swing"][:4],
+            "swing_resistances": [item for item in resistances if item["scope"] == "swing"][:4],
+            "extreme_supports": [item for item in supports if item["scope"] == "extreme"][:3],
+            "extreme_resistances": [item for item in resistances if item["scope"] == "extreme"][:3],
+            "display_supports": display_supports,
+            "display_resistances": display_resistances,
+            "long_risk_reward": StockAnalyzer._risk_reward(
+                entry=price,
+                stop=display_supports[0] if display_supports else None,
+                target=display_resistances[0] if display_resistances else None,
+                direction="long",
+            ),
+            "short_risk_reward": StockAnalyzer._risk_reward(
+                entry=price,
+                stop=display_resistances[0] if display_resistances else None,
+                target=display_supports[0] if display_supports else None,
+                direction="short",
+            ),
+            "explanation": {
+                "short_term": "短线观察位来自日内高低点、上一收盘价和短均线，适合判断今天/明天是否追高或止损。",
+                "swing": "波段关键位来自MA20、布林带和20日高低点，适合判断一段趋势是否还成立。",
+                "extreme": "极端风险位来自MA60和60日高低点，适合评估最坏情景，不应直接当成短线止损。",
+                "risk_reward": "赔率=潜在收益/潜在亏损。赔率低于1说明赚少亏多，通常不适合主动进攻。",
+            },
+        }
+
+    @staticmethod
+    def _levels_around_price(price: float, candidates: list[tuple[str, Any, str]], below: bool) -> list[dict[str, Any]]:
+        levels: dict[float, dict[str, Any]] = {}
+        for label, value, scope in candidates:
+            number = StockAnalyzer._float_or_none(value)
+            if number is None or number <= 0:
+                continue
+            if below and number > price:
+                continue
+            if not below and number < price:
+                continue
+            key = round(number, 4)
+            if key not in levels:
+                levels[key] = {
+                    "price": round(number, 4),
+                    "label": label,
+                    "scope": scope,
+                    "distance_pct": round((number / price - 1) * 100, 2) if price else None,
+                }
+            else:
+                levels[key]["label"] += f"/{label}"
+        return sorted(levels.values(), key=lambda item: item["price"], reverse=below)
+
+    @staticmethod
+    def _display_levels(
+        price: float,
+        filtered: list[dict[str, Any]],
+        all_candidates: list[tuple[str, Any, str]],
+        below: bool,
+    ) -> tuple[float, float]:
+        values = [float(item["price"]) for item in filtered[:2]]
+        if len(values) >= 2:
+            return (round(values[0], 2), round(values[1], 2))
+
+        fallback_values = []
+        for _, value, _ in all_candidates:
+            number = StockAnalyzer._float_or_none(value)
+            if number is not None and number > 0:
+                fallback_values.append(number)
+        if below:
+            fallback_values = [item for item in fallback_values if item <= price]
+        else:
+            fallback_values = [item for item in fallback_values if item >= price]
+        fallback_values = sorted(set(round(item, 4) for item in fallback_values), reverse=below)
+        for value in fallback_values:
+            if value not in values:
+                values.append(value)
+            if len(values) >= 2:
+                break
+        while len(values) < 2:
+            values.append(values[-1] if values else price)
+        return (round(values[0], 2), round(values[1], 2))
+
+    @staticmethod
+    def _risk_reward(entry: float, stop: float | None, target: float | None, direction: str) -> dict[str, Any]:
+        if stop is None or target is None:
+            return {"available": False}
+        if direction == "long":
+            risk = entry - stop
+            reward = target - entry
+        else:
+            risk = stop - entry
+            reward = entry - target
+        ratio = reward / risk if risk and risk > 0 else None
+        return {
+            "available": ratio is not None and ratio > 0,
+            "entry": round(entry, 4),
+            "stop": round(stop, 4),
+            "target": round(target, 4),
+            "risk_points": round(risk, 4) if risk is not None else None,
+            "reward_points": round(reward, 4) if reward is not None else None,
+            "reward_risk_ratio": round(ratio, 2) if ratio is not None else None,
+        }
+
+    @staticmethod
+    def _vwap(intraday: pd.DataFrame) -> float | None:
+        if "volume" not in intraday.columns:
+            return None
+        volume = pd.to_numeric(intraday["volume"], errors="coerce")
+        close = pd.to_numeric(intraday["close"], errors="coerce")
+        total_volume = float(volume.sum())
+        if total_volume <= 0:
+            return None
+        return float((close * volume).sum() / total_volume)
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        try:
+            if value is None or pd.isna(value):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _news_score(news: tuple[NewsItem, ...]) -> tuple[int, str]:

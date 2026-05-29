@@ -79,6 +79,8 @@ def main() -> None:
     st.subheader("AI 投资决策")
     st.markdown(ai_text or "AI 报告为空，请重新生成分析。")
 
+    _render_level_context(result)
+    _render_etf_context(result)
     _render_quant_context(result)
 
     _render_follow_up(result, ai_provider=ai_provider, report_depth=report_depth)
@@ -174,6 +176,79 @@ def _render_summary(result) -> None:
     cols[3].metric("第一压力", f"{result.resistance_levels[0]:.2f}")
 
 
+def _render_level_context(result) -> None:
+    context = result.market_data.get("level_context") or {}
+    if not context:
+        return
+
+    st.subheader("关键价位分层")
+    st.caption("短线位用于今天/明天的交易计划，波段位用于判断趋势是否还成立，极端位只用于最坏情景评估。")
+    cols = st.columns(2)
+    with cols[0]:
+        st.markdown("**支撑位**")
+        _render_level_group("短线支撑", context.get("short_term_supports") or [])
+        _render_level_group("波段支撑", context.get("swing_supports") or [])
+        _render_level_group("极端风险支撑", context.get("extreme_supports") or [])
+    with cols[1]:
+        st.markdown("**压力位**")
+        _render_level_group("短线压力", context.get("short_term_resistances") or [])
+        _render_level_group("波段压力", context.get("swing_resistances") or [])
+        _render_level_group("极端压力", context.get("extreme_resistances") or [])
+
+    rr = context.get("long_risk_reward") or {}
+    if rr.get("available"):
+        st.info(
+            f"多头赔率参考：入场 {rr.get('entry')}，止损 {rr.get('stop')}，目标 {rr.get('target')}，"
+            f"赔率 {rr.get('reward_risk_ratio')}。赔率低于 1 通常代表潜在收益不足以覆盖风险。"
+        )
+
+
+def _render_level_group(title: str, levels: list[dict]) -> None:
+    if not levels:
+        st.caption(f"{title}: 暂无")
+        return
+    text = "；".join(
+        f"{item.get('label')} {float(item.get('price')):.2f} ({float(item.get('distance_pct')):+.2f}%)"
+        for item in levels[:4]
+        if item.get("price") is not None
+    )
+    st.caption(f"{title}: {text}")
+
+
+def _render_etf_context(result) -> None:
+    if result.quote.asset_type != "etf":
+        return
+    data = result.fundamental_data
+    detail = data.get("realtime_detail") or {}
+    holdings = (data.get("top_holdings") or {}).get("records") or []
+    industries = (data.get("industry_allocation") or {}).get("records") or []
+    if not detail and not holdings and not industries:
+        return
+
+    st.subheader("ETF 专属信息")
+    st.caption("ETF 重点看跟踪方向、流动性、IOPV折溢价、份额变化和成分集中度。持仓/行业配置通常来自季报，存在滞后。")
+    if detail:
+        rows = []
+        for label, key, meaning in (
+            ("IOPV实时估值", "IOPV实时估值", "盘中参考净值，用来判断成交价是否偏离净值。"),
+            ("基金折价率", "基金折价率", "正值通常表示溢价，负值通常表示折价；绝对值越大偏离风险越高。"),
+            ("成交额", "成交额", "成交额越大，交易冲击成本通常越低。"),
+            ("换手率", "换手率", "反映交易活跃度，过高也可能代表短线拥挤。"),
+            ("最新份额", "最新份额", "辅助观察资金申赎方向。"),
+            ("流通市值", "流通市值", "规模越大通常流动性更稳定。"),
+        ):
+            if key in detail:
+                rows.append({"指标": label, "数值": detail.get(key), "意思": meaning})
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+    if holdings:
+        with st.expander("查看主要持仓"):
+            st.dataframe(holdings[:15], use_container_width=True, hide_index=True)
+    if industries:
+        with st.expander("查看行业配置"):
+            st.dataframe(industries[:12], use_container_width=True, hide_index=True)
+
+
 def _render_quant_context(result) -> None:
     quant = result.fundamental_data.get("quant_context") or {}
     if not quant:
@@ -190,8 +265,16 @@ def _render_quant_context(result) -> None:
     cols[1].metric("因子综合分", f"{quant.get('factor_score', 'N/A')}/100")
     cols[2].metric("量化置信度", f"{quant.get('confidence', 'N/A')}/100")
 
+    with st.expander("这些量化指标是什么意思"):
+        metric_guide = quant.get("metric_guide") or {}
+        if metric_guide:
+            for value in metric_guide.values():
+                st.caption(value)
+        st.caption("重要：量化分和回测只用于提高判断质量，不是确定预测，也不是自动买卖指令。")
+
     factors = quant.get("factors") or []
     if factors:
+        factor_guide = quant.get("factor_guide") or {}
         st.dataframe(
             [
                 {
@@ -199,6 +282,7 @@ def _render_quant_context(result) -> None:
                     "分数": item.get("score"),
                     "状态": item.get("label"),
                     "依据": "；".join(item.get("evidence") or []),
+                    "怎么看": factor_guide.get(item.get("key"), "该因子用于辅助判断当前结构。"),
                 }
                 for item in factors
             ],
@@ -229,6 +313,32 @@ def _render_quant_context(result) -> None:
         )
     if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    strategy = quant.get("strategy_backtest") or {}
+    st.markdown("**策略型回测**")
+    if not strategy.get("available"):
+        st.caption(strategy.get("reason") or "策略型回测暂不可用。")
+    else:
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("交易次数", strategy.get("trade_count", "N/A"))
+        metric_cols[1].metric("胜率", f"{strategy.get('win_rate')}%")
+        metric_cols[2].metric("平均收益", f"{strategy.get('avg_return')}%")
+        metric_cols[3].metric("最大回撤", f"{strategy.get('max_drawdown')}%")
+        metric_cols[4].metric("盈亏比", strategy.get("profit_factor") or "N/A")
+
+        rule = strategy.get("rule") or {}
+        st.caption(
+            "规则："
+            f"{rule.get('entry', 'N/A')}；"
+            f"{rule.get('stop_loss', 'N/A')}；"
+            f"{rule.get('take_profit', 'N/A')}；"
+            f"最多持有 {rule.get('max_holding_days', 'N/A')} 日；"
+            f"往返成本 {rule.get('round_trip_cost_bps', 'N/A')} bps。"
+        )
+        recent_trades = strategy.get("recent_trades") or []
+        if recent_trades:
+            st.dataframe(recent_trades, use_container_width=True, hide_index=True)
+        st.caption(strategy.get("interpretation") or "")
     st.caption(quant.get("usage_note") or "")
 
 

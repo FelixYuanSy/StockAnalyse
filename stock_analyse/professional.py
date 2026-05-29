@@ -35,6 +35,7 @@ def build_professional_context(
         "purpose": "给 AI 的专业投研底稿，用于减少模板化判断和新闻误读。",
         "data_time_warning": _data_time_warning(quote, history),
         "news_relevance": _news_relevance(quote.symbol, asset_type, news),
+        "level_plan": _level_plan(quote, history),
     }
 
     if asset_type == "futures":
@@ -42,9 +43,10 @@ def build_professional_context(
             {
                 "basis_summary": _basis_summary(fundamental_data),
                 "position_summary": _position_summary(fundamental_data),
-                "level_plan": _level_plan(quote, history),
             }
         )
+    elif asset_type == "etf":
+        context["etf_summary"] = _etf_summary(fundamental_data)
 
     return context
 
@@ -101,6 +103,33 @@ def _position_summary(fundamental_data: dict) -> dict:
         "top_volume_total": _sum_field(volumes, "成交量"),
         "data_date": _first_non_empty(longs, "data_date") or _first_non_empty(shorts, "data_date"),
         "interpretation_warning": "席位数据代表会员客户汇总，不等于期货公司自营观点；重点看前N合计、净持仓和增减仓方向，不要只解读单个席位。",
+    }
+
+
+def _etf_summary(fundamental_data: dict) -> dict:
+    detail = fundamental_data.get("realtime_detail") or {}
+    holdings = (fundamental_data.get("top_holdings") or {}).get("records") or []
+    industry_rows = (fundamental_data.get("industry_allocation") or {}).get("records") or []
+    latest_nav = (fundamental_data.get("nav_history_tail") or [])
+    latest_nav_row = latest_nav[-1] if latest_nav else {}
+
+    return {
+        "available": bool(detail or holdings or industry_rows),
+        "iopv": detail.get("IOPV实时估值"),
+        "discount_rate": detail.get("基金折价率"),
+        "amount": detail.get("成交额"),
+        "turnover_rate": detail.get("换手率"),
+        "fund_shares": detail.get("最新份额"),
+        "market_value": detail.get("流通市值") or detail.get("总市值"),
+        "latest_nav_date": latest_nav_row.get("净值日期") or latest_nav_row.get("日期"),
+        "latest_nav": latest_nav_row.get("单位净值") or latest_nav_row.get("累计净值"),
+        "top_holdings_count": len(holdings),
+        "top_holdings_sample": holdings[:8],
+        "industry_sample": industry_rows[:6],
+        "interpretation_hint": (
+            "ETF不是单家公司，重点看跟踪指数方向、成交额/换手率、IOPV折溢价、份额变化、"
+            "前十大持仓和行业集中度。持仓和行业配置通常来自季报，天然滞后。"
+        ),
     }
 
 
