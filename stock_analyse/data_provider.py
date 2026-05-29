@@ -164,14 +164,20 @@ class AkshareDataProvider:
         try:
             with self._network_context():
                 if asset_type == "futures":
-                    df = self._ak.futures_zh_minute_sina(symbol=code.upper(), period=period)
+                    df = self._call_with_retries(
+                        lambda: self._ak.futures_zh_minute_sina(symbol=code.upper(), period=period)
+                    )
                 elif asset_type == "etf":
-                    df = self._ak.fund_etf_hist_min_em(symbol=code, period=period, adjust="")
+                    df = self._call_with_retries(
+                        lambda: self._ak.fund_etf_hist_min_em(symbol=code, period=period, adjust="")
+                    )
                 else:
-                    df = self._ak.stock_zh_a_minute(
-                        symbol=self._market_prefixed_symbol(code),
-                        period=period,
-                        adjust="",
+                    df = self._call_with_retries(
+                        lambda: self._ak.stock_zh_a_minute(
+                            symbol=self._market_prefixed_symbol(code),
+                            period=period,
+                            adjust="",
+                        )
                     )
         except Exception as exc:
             errors.append(f"Sina 分钟线接口失败: {exc}")
@@ -179,7 +185,14 @@ class AkshareDataProvider:
                 with self._network_context():
                     if asset_type == "futures":
                         raise DataProviderError("期货暂无备用分钟线接口")
-                    df = self._ak.stock_zh_a_hist_min_em(symbol=code, period=period, adjust="")
+                    if asset_type == "etf":
+                        df = self._call_with_retries(
+                            lambda: self._ak.fund_etf_hist_min_em(symbol=code, period=period, adjust="")
+                        )
+                    else:
+                        df = self._call_with_retries(
+                            lambda: self._ak.stock_zh_a_hist_min_em(symbol=code, period=period, adjust="")
+                        )
             except Exception as fallback_exc:
                 errors.append(f"东方财富分钟线接口失败: {fallback_exc}")
                 raise DataProviderError(f"无法获取 {code} 分钟线: {'; '.join(errors)}") from fallback_exc
@@ -191,10 +204,12 @@ class AkshareDataProvider:
         if missing and asset_type in {"stock", "etf"}:
             try:
                 with self._network_context():
-                    df = self._ak.stock_zh_a_minute(
-                        symbol=self._market_prefixed_symbol(code),
-                        period=period,
-                        adjust="",
+                    df = self._call_with_retries(
+                        lambda: self._ak.stock_zh_a_minute(
+                            symbol=self._market_prefixed_symbol(code),
+                            period=period,
+                            adjust="",
+                        )
                     )
                 normalized = self._normalize_intraday_frame(df, code)
                 missing = [column for column in required if column not in normalized.columns]
@@ -231,6 +246,18 @@ class AkshareDataProvider:
                 "成交额": "amount",
             }
         ).copy()
+
+    @staticmethod
+    def _call_with_retries(func, attempts: int = 3):
+        last_exc: Exception | None = None
+        for _ in range(attempts):
+            try:
+                return func()
+            except Exception as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        raise DataProviderError("接口重试失败")
 
     def get_global_news(self, limit: int = 8) -> tuple[NewsItem, ...]:
         try:

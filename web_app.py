@@ -241,6 +241,11 @@ def _render_etf_context(result) -> None:
                 rows.append({"指标": label, "数值": detail.get(key), "意思": meaning})
         if rows:
             st.dataframe(rows, use_container_width=True, hide_index=True)
+        flow_rows = _fund_flow_rows(detail)
+        if flow_rows:
+            st.markdown("**资金流向**")
+            st.caption("资金流用于观察短线情绪。净流入为负代表该类资金当日偏卖出，不能单独作为买卖信号。")
+            st.dataframe(flow_rows, use_container_width=True, hide_index=True)
     if holdings:
         with st.expander("查看主要持仓"):
             st.dataframe(holdings[:15], use_container_width=True, hide_index=True)
@@ -340,6 +345,44 @@ def _render_quant_context(result) -> None:
             st.dataframe(recent_trades, use_container_width=True, hide_index=True)
         st.caption(strategy.get("interpretation") or "")
     st.caption(quant.get("usage_note") or "")
+
+
+def _fund_flow_rows(detail: dict) -> list[dict]:
+    rows = []
+    for label, amount_key, ratio_key in (
+        ("主力", "主力净流入-净额", "主力净流入-净占比"),
+        ("超大单", "超大单净流入-净额", "超大单净流入-净占比"),
+        ("大单", "大单净流入-净额", "大单净流入-净占比"),
+        ("中单", "中单净流入-净额", "中单净流入-净占比"),
+        ("小单", "小单净流入-净额", "小单净流入-净占比"),
+    ):
+        if amount_key not in detail and ratio_key not in detail:
+            continue
+        rows.append(
+            {
+                "类别": label,
+                "净额": _format_money(detail.get(amount_key)),
+                "净占比": _format_percent(detail.get(ratio_key)),
+            }
+        )
+    return rows
+
+
+def _format_money(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value or "N/A")
+    unit = "亿" if abs(number) >= 100_000_000 else "万"
+    divisor = 100_000_000 if unit == "亿" else 10_000
+    return f"{number / divisor:.2f}{unit}"
+
+
+def _format_percent(value) -> str:
+    try:
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return str(value or "N/A")
 
 
 def _render_follow_up(result, ai_provider: str, report_depth: str) -> None:

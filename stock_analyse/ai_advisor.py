@@ -83,6 +83,7 @@ class AiAdvisor:
             "asset_specific_framework": _asset_specific_framework(result.quote.asset_type),
             "etf_data_requirements": [
                 "如果标的类型是 ETF，且 analysis_payload.fundamental_data.realtime_detail 存在，必须引用 IOPV实时估值、基金折价率、成交额、换手率、最新份额、流通市值/总市值、资金流向等字段。",
+                "如果引用ETF资金流向，必须明确列出主力/超大单/大单净额或净占比，并说明资金流只是短线情绪指标，不能单独决定买卖。",
                 "如果 analysis_payload.fundamental_data.top_holdings 存在，必须说明最近一期前十大或前十五大持仓、权重集中度和主要成分股风险。",
                 "如果 analysis_payload.fundamental_data.industry_allocation 存在，必须说明行业配置、第一大行业占比和行业集中风险。",
                 "只有在对应字段确实缺失时，才提示 ETF 持仓、IOPV、折溢价缺失；不要在字段已经存在时继续说暂未接入。",
@@ -111,6 +112,7 @@ class AiAdvisor:
                 "期货交易计划必须数字化：写出入场区间、止损位、目标位、风险点数、收益点数、赔率；如果胜率不足，要明确说即使赔率可看也不建议重仓。",
                 "支撑压力必须分层：日内/短线观察位、波段关键位、极端风险位，不要只给一个很远的支撑位。",
                 "如果 quote_price 与 latest_kline_close 不在同一时间截面，必须在结论前半部分明确提醒，避免把实时价和日线指标混用。",
+                "如果 market_phase 是 盘中 或 午间休市，不得写“技术指标和K线数据截至今日收盘”；应写“截至当前可获取的盘中快照/日线快照”。只有 market_phase 是 盘后 或 休市，才可以说日线收盘数据。",
                 "如果是ETF，不要套用股票财务评分；必须增加“ETF质量与交易评分”章节，覆盖跟踪指数趋势、行业/风格景气、流动性、折溢价/IOPV可用性、成分风险、技术面。",
                 "不要照抄本地规则结论；本地评分只能作为参考，必须自己综合K线、指标、量能、新闻和关键价位判断。",
                 "必须给出看错条件和风险控制。",

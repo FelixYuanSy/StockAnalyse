@@ -216,6 +216,7 @@ def _etf_context_html(result: AnalysisResult) -> str:
     ):
         if key in detail:
             metric_rows.append(f"<tr><td>{escape(label)}</td><td>{escape(str(detail.get(key)))}</td><td>{escape(meaning)}</td></tr>")
+    flow_rows = _fund_flow_rows(detail)
 
     holding_rows = []
     for item in holdings[:10]:
@@ -237,6 +238,11 @@ def _etf_context_html(result: AnalysisResult) -> str:
         html.append("<h3>交易与净值指标</h3><table><thead><tr><th>指标</th><th>数值</th><th>含义</th></tr></thead><tbody>")
         html.append("".join(metric_rows))
         html.append("</tbody></table>")
+    if flow_rows:
+        html.append("<h3>资金流向</h3><p class=\"muted\">资金流用于观察短线情绪。净流入为负代表该类资金当日偏卖出，不能单独作为买卖信号。</p>")
+        html.append("<table><thead><tr><th>类别</th><th>净额</th><th>净占比</th></tr></thead><tbody>")
+        html.append("".join(flow_rows))
+        html.append("</tbody></table>")
     if holding_rows:
         html.append("<h3>最近一期主要持仓</h3><table><thead><tr><th>成分</th><th>权重/比例</th></tr></thead><tbody>")
         html.append("".join(holding_rows))
@@ -247,6 +253,40 @@ def _etf_context_html(result: AnalysisResult) -> str:
         html.append("</tbody></table>")
     html.append("</section>")
     return "".join(html)
+
+
+def _fund_flow_rows(detail: dict) -> list[str]:
+    rows = []
+    for label, amount_key, ratio_key in (
+        ("主力", "主力净流入-净额", "主力净流入-净占比"),
+        ("超大单", "超大单净流入-净额", "超大单净流入-净占比"),
+        ("大单", "大单净流入-净额", "大单净流入-净占比"),
+        ("中单", "中单净流入-净额", "中单净流入-净占比"),
+        ("小单", "小单净流入-净额", "小单净流入-净占比"),
+    ):
+        if amount_key not in detail and ratio_key not in detail:
+            continue
+        amount = _format_money(detail.get(amount_key))
+        ratio = _format_percent(detail.get(ratio_key))
+        rows.append(f"<tr><td>{escape(label)}</td><td>{escape(amount)}</td><td>{escape(ratio)}</td></tr>")
+    return rows
+
+
+def _format_money(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value or "N/A")
+    unit = "亿" if abs(number) >= 100_000_000 else "万"
+    divisor = 100_000_000 if unit == "亿" else 10_000
+    return f"{number / divisor:.2f}{unit}"
+
+
+def _format_percent(value) -> str:
+    try:
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return str(value or "N/A")
 
 
 def _quant_context_html(result: AnalysisResult) -> str:
