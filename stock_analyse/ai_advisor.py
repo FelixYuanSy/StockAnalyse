@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from datetime import date
 from urllib.parse import urlparse
 from typing import Literal
 
@@ -74,19 +75,24 @@ class AiAdvisor:
         user_question: str | None = None,
         report_depth: str = "专业详细",
         enable_web_search: bool | None = None,
+        analysis_goal: str | None = None,
     ) -> str:
         payload = _analysis_payload(result)
+        analysis_goal = (analysis_goal or "").strip()
         missing_search = _missing_data_search_instruction(result)
+        goal_needs_search = _text_requests_search(analysis_goal)
         use_gemini_search = (
             self._provider == "gemini"
-            and (bool(user_question) or missing_search["should_search"])
+            and (bool(user_question) or missing_search["should_search"] or goal_needs_search)
             and _should_enable_gemini_search_grounding()
             if enable_web_search is None
             else self._provider == "gemini" and bool(enable_web_search)
         )
         prompt = {
             "task": "你是主分析模型。请基于程序收集到的股票、ETF或期货行情、K线、指标、新闻，独立给出下一阶段趋势预测和投资建议。",
-            "user_question": user_question or "请给出完整投资分析。",
+            "analysis_goal": analysis_goal or "请给出完整投资分析。",
+            "target_date_instruction": _target_date_instruction(analysis_goal),
+            "user_question": user_question or "",
             "report_depth": report_depth,
             "analysis_payload": payload,
             "interactive_search_instruction": _interactive_search_instruction(use_gemini_search),
@@ -111,6 +117,9 @@ class AiAdvisor:
             ],
             "output_requirements": [
                 "必须使用中文，结构清晰，像一位优秀投资者给普通投资者解释。",
+                "如果 analysis_goal 不为空，报告必须围绕 analysis_goal 展开；不要默认写成“今天走势”，也不要机械复用通用模板。",
+                "如果 analysis_goal 或 target_date_instruction 包含目标日期，必须在一句话结论、操作计划和数据说明中明确该目标日期；今天/当前只允许作为数据截面，不是报告主题。",
+                "如果目标日期在未来，请基于当前可得数据预测该日期前后的情景、触发条件和风控计划，不要假装已经知道未来真实行情。",
                 "如果 user_question 要求你搜索、查找、核实、补充仓单/库存/仓储/现货/基差/新闻等最新信息，且 interactive_search_instruction 显示搜索工具已启用，你必须先使用搜索工具，而不是只说原始底稿缺失。",
                 "如果 missing_data_search_instruction.should_search 为 true，且 interactive_search_instruction 显示搜索工具已启用，你必须先尝试用搜索工具补齐这些缺失数据，再生成完整报告。",
                 "如果缺失项属于分钟线/实时盘口等搜索工具无法可靠替代的数据，可以明确说明不能用网页搜索替代，不要编造。",
@@ -439,6 +448,61 @@ def _should_try_gemini_direct_fallback() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _text_requests_search(text: str | None) -> bool:
+    if not text:
+        return False
+    keywords = (
+        "搜索",
+        "查",
+        "查询",
+        "核实",
+        "最新",
+        "新闻",
+        "仓单",
+        "库存",
+        "仓储",
+        "现货",
+        "基差",
+        "持仓",
+        "6.1",
+        "6月1",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def _target_date_instruction(text: str | None) -> dict:
+    value = (text or "").strip()
+    if not value:
+        return {"has_target_date": False}
+
+    current_year = date.today().year
+    patterns = (
+        r"(?P<year>20\d{2})[./年-]\s*(?P<month>\d{1,2})[./月-]\s*(?P<day>\d{1,2})\s*(?:日)?",
+        r"(?P<month>\d{1,2})[./月-]\s*(?P<day>\d{1,2})\s*(?:日)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value)
+        if not match:
+            continue
+        year = int(match.groupdict().get("year") or current_year)
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        try:
+            target = date(year, month, day)
+        except ValueError:
+            continue
+        return {
+            "has_target_date": True,
+            "target_date": target.isoformat(),
+            "raw_text": match.group(0),
+            "instruction": (
+                "本次报告主题必须围绕该目标日期预测。"
+                "当前行情和K线只代表数据截面，不能把报告主题写成今天。"
+            ),
+        }
+    return {"has_target_date": False}
+
+
 def _should_enable_gemini_search_grounding() -> bool:
     value = os.getenv("GEMINI_SEARCH_GROUNDING", "true").strip().lower()
     return value not in {"0", "false", "no", "off"}
@@ -704,6 +768,7 @@ def _follow_up_prompt(
     return {
         "task": "这是用户在完整报告之后的继续追问。请直接解决用户的新问题，不要重新套完整投资报告模板。",
         "user_question": user_question,
+        "target_date_instruction": _target_date_instruction(user_question),
         "report_depth": report_depth,
         "interactive_search_instruction": _interactive_search_instruction(enable_search),
         "current_context": _compact_follow_up_context(result),

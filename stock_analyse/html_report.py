@@ -10,11 +10,23 @@ from .charting import build_chart_html, write_html
 from .models import AnalysisResult, NewsItem
 
 
-def generate_html_report(result: AnalysisResult, ai_text: str, output_dir: Path) -> Path:
+def generate_html_report(
+    result: AnalysisResult,
+    ai_text: str,
+    output_dir: Path,
+    analysis_goal: str = "",
+) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{result.quote.symbol}_{timestamp}.html"
     path = output_dir / filename
     chart_html = build_chart_html(result)
+    analysis_goal = (analysis_goal or "").strip()
+    goal_pill = f'<span class="pill">分析目标: {escape(analysis_goal)}</span>' if analysis_goal else ""
+    goal_section = (
+        f'<section class="panel"><h2>本次分析目标</h2><p class="muted">{escape(analysis_goal)}</p></section>'
+        if analysis_goal
+        else ""
+    )
     fundamental_json = json.dumps(result.fundamental_data, ensure_ascii=False, indent=2, default=str)
     news_html = _news_links_html(result)
     data_quality_html = _data_quality_html(result)
@@ -63,12 +75,14 @@ def generate_html_report(result: AnalysisResult, ai_text: str, output_dir: Path)
     <h1>{escape(result.quote.name)} ({escape(result.quote.symbol)}) 投资决策报告</h1>
     <div class="meta">
       <span class="pill">类型: {escape(result.quote.asset_type)}</span>
+      {goal_pill}
       <span class="pill">数据来源: {escape(result.data_source)}</span>
       <span class="pill">市场状态: {escape(result.market_phase)}</span>
       <span class="pill">生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</span>
     </div>
   </header>
   <main>
+    {goal_section}
     <section class="panel">
       <div class="grid">
         <div class="metric">当前价格<b>{result.quote.price:.2f}</b></div>

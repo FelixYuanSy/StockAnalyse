@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
         help="AI report style, default: 专业详细",
     )
     parser.add_argument(
+        "--analysis-goal",
+        default="",
+        help="Optional goal for the full AI report, for example: 预测6月1日走势",
+    )
+    parser.add_argument(
         "--ai-provider",
         default="auto",
         choices=("auto", "openai", "gemini", "deepseek"),
@@ -163,6 +168,7 @@ def interactive_loop(
     report: bool,
     report_dir: Path,
     report_depth: str,
+    analysis_goal: str = "",
 ) -> int:
     result: AnalysisResult | None = None
     current_symbol = initial_symbol
@@ -191,10 +197,15 @@ def interactive_loop(
             continue
 
         if advisor:
-            ai_text = _get_ai_advice(advisor, result, report_depth=report_depth)
+            ai_text = _get_ai_advice(
+                advisor,
+                result,
+                report_depth=report_depth,
+                analysis_goal=analysis_goal,
+            )
             print(_format_ai_output(advisor, ai_text))
             if report and ai_text:
-                print(_write_report(result, ai_text, report_dir))
+                print(_write_report(result, ai_text, report_dir, analysis_goal=analysis_goal))
         if advisor is None or show_raw:
             print(format_report(result))
         print(format_follow_up_help())
@@ -265,11 +276,17 @@ def _get_ai_advice(
     result: AnalysisResult,
     question: str | None = None,
     report_depth: str = "专业详细",
+    analysis_goal: str = "",
 ) -> str:
     if advisor is None:
         return ""
     try:
-        advice = advisor.advise(result, user_question=question, report_depth=report_depth)
+        advice = advisor.advise(
+            result,
+            user_question=question,
+            report_depth=report_depth,
+            analysis_goal=analysis_goal,
+        )
     except AiAdvisorError as exc:
         return "\n".join(
             [
@@ -289,8 +306,8 @@ def _format_ai_output(advisor: AiAdvisor, ai_text: str) -> str:
     return f"\nAI 模型分析 ({advisor.provider}/{advisor.model}):\n{ai_text}"
 
 
-def _write_report(result: AnalysisResult, ai_text: str, report_dir: Path) -> str:
-    path = generate_html_report(result, ai_text, report_dir)
+def _write_report(result: AnalysisResult, ai_text: str, report_dir: Path, analysis_goal: str = "") -> str:
+    path = generate_html_report(result, ai_text, report_dir, analysis_goal=analysis_goal)
     return f"\nHTML 图文报告已生成: {path.resolve()}"
 
 
@@ -320,10 +337,15 @@ def main() -> int:
         try:
             result = analyze_symbol(provider, analyzer, symbol, args.days, asset=args.asset)
             if advisor:
-                ai_text = _get_ai_advice(advisor, result, report_depth=args.report_depth)
+                ai_text = _get_ai_advice(
+                    advisor,
+                    result,
+                    report_depth=args.report_depth,
+                    analysis_goal=args.analysis_goal,
+                )
                 print(_format_ai_output(advisor, ai_text))
                 if args.report and ai_text:
-                    print(_write_report(result, ai_text, Path(args.report_dir)))
+                    print(_write_report(result, ai_text, Path(args.report_dir), analysis_goal=args.analysis_goal))
             if args.no_ai or args.show_raw:
                 print(format_report(result))
         except DataProviderError as exc:
@@ -342,6 +364,7 @@ def main() -> int:
         args.report,
         Path(args.report_dir),
         args.report_depth,
+        args.analysis_goal,
     )
 
 

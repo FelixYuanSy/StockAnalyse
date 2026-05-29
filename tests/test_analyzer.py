@@ -7,7 +7,7 @@ import tempfile
 
 import pandas as pd
 
-from stock_analyse.ai_advisor import _analysis_payload
+from stock_analyse.ai_advisor import _analysis_payload, _target_date_instruction
 from stock_analyse.analyzer import StockAnalyzer
 from stock_analyse.html_report import generate_html_report
 from stock_analyse.instrument_parser import is_instrument_text, parse_instrument_input
@@ -23,6 +23,11 @@ class StockAnalyzerTest(unittest.TestCase):
         self.assertTrue(is_instrument_text("510300"))
         self.assertTrue(is_instrument_text("LC2609"))
         self.assertTrue(is_instrument_text("futures:LC2609"))
+
+    def test_target_date_instruction_detects_user_goal(self) -> None:
+        instruction = _target_date_instruction("请预测6.1走势")
+        self.assertTrue(instruction["has_target_date"])
+        self.assertTrue(instruction["target_date"].endswith("-06-01"))
 
     def test_analyze_generates_report_fields(self) -> None:
         rows = []
@@ -66,10 +71,16 @@ class StockAnalyzerTest(unittest.TestCase):
         self.assertIn("quant_context", payload["fundamental_data"])
         json.dumps(payload, ensure_ascii=False)
         with tempfile.TemporaryDirectory() as tmpdir:
-            report_path = generate_html_report(result, "AI analysis text", Path(tmpdir))
+            report_path = generate_html_report(
+                result,
+                "AI analysis text",
+                Path(tmpdir),
+                analysis_goal="预测6月1日走势",
+            )
             self.assertTrue(report_path.exists())
             report_html = report_path.read_text(encoding="utf-8")
             self.assertIn("AI analysis text", report_html)
+            self.assertIn("预测6月1日走势", report_html)
             self.assertIn("关键价位分层", report_html)
             self.assertIn("量化因子与回测说明", report_html)
             self.assertIn("指标词典", report_html)

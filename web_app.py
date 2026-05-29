@@ -47,6 +47,13 @@ def main() -> None:
         )
         ai_provider = st.selectbox("AI Provider", options=["auto", "gemini", "deepseek", "openai"], index=1)
         report_depth = st.selectbox("报告深度", options=REPORT_DEPTH_OPTIONS, index=0)
+        analysis_goal = st.text_area(
+            "分析目标/问题",
+            value="",
+            height=90,
+            placeholder="例如：预测6月1日走势 / 只分析仓单库存影响 / 明天怎么操作",
+            help="这里的内容会成为整份 HTML 报告的主题；继续追问会另存一份以追问为主题的 HTML 报告。",
+        )
         days = st.slider("历史K线天数", min_value=80, max_value=260, value=120, step=20)
         show_raw = st.checkbox("显示本地数据底稿", value=False)
         generate_file = st.checkbox("生成 HTML 报告文件", value=True)
@@ -63,6 +70,7 @@ def main() -> None:
             asset=asset,
             ai_provider=ai_provider,
             report_depth=report_depth,
+            analysis_goal=analysis_goal,
             days=days,
             generate_file=generate_file,
         )
@@ -75,6 +83,8 @@ def main() -> None:
         return
 
     _render_summary(result)
+    if st.session_state.latest_analysis_goal:
+        st.info(f"本次报告目标：{st.session_state.latest_analysis_goal}")
 
     st.subheader("AI 投资决策")
     st.markdown(ai_text or "AI 报告为空，请重新生成分析。")
@@ -103,6 +113,7 @@ def _init_session_state() -> None:
         "latest_result": None,
         "latest_ai_text": "",
         "latest_report_path": "",
+        "latest_analysis_goal": "",
         "chat_history": [],
     }
     for key, value in defaults.items():
@@ -114,6 +125,7 @@ def _clear_analysis_state() -> None:
     st.session_state.latest_result = None
     st.session_state.latest_ai_text = ""
     st.session_state.latest_report_path = ""
+    st.session_state.latest_analysis_goal = ""
     st.session_state.chat_history = []
 
 
@@ -122,6 +134,7 @@ def _run_analysis(
     asset: str,
     ai_provider: str,
     report_depth: str,
+    analysis_goal: str,
     days: int,
     generate_file: bool,
 ) -> None:
@@ -148,7 +161,7 @@ def _run_analysis(
 
     with st.status("AI 正在生成专业投资决策报告...", expanded=False):
         try:
-            ai_text = advisor.advise(result, report_depth=report_depth)
+            ai_text = advisor.advise(result, report_depth=report_depth, analysis_goal=analysis_goal)
         except AiAdvisorError as exc:
             st.error(f"AI 分析未完成: {exc}")
             st.subheader("已获取到的数据底稿")
@@ -157,13 +170,14 @@ def _run_analysis(
 
     report_path = ""
     if generate_file:
-        path = generate_html_report(result, ai_text, Path("reports"))
+        path = generate_html_report(result, ai_text, Path("reports"), analysis_goal=analysis_goal)
         report_path = str(path)
         st.success(f"HTML 报告已生成: {path.resolve()}")
 
     st.session_state.latest_result = result
     st.session_state.latest_ai_text = ai_text
     st.session_state.latest_report_path = report_path
+    st.session_state.latest_analysis_goal = (analysis_goal or "").strip()
     st.session_state.chat_history = []
 
 
@@ -424,8 +438,16 @@ def _render_follow_up(result, ai_provider: str, report_depth: str) -> None:
             "show_today_prediction": show_today_prediction,
         }
     )
+    try:
+        follow_up_report = generate_html_report(result, answer, Path("reports"), analysis_goal=question)
+        st.session_state.latest_report_path = str(follow_up_report)
+        st.session_state.latest_analysis_goal = question
+    except Exception as exc:
+        st.warning(f"追问 HTML 报告生成失败: {exc}")
     with st.chat_message("assistant"):
         st.markdown(answer)
+        if st.session_state.latest_report_path:
+            st.caption(f"已把这次追问另存为 HTML 报告：{Path(st.session_state.latest_report_path).resolve()}")
         if show_today_prediction:
             st.caption("下图是基于当前数据底稿生成的情景预测，不是确定走势。")
             components.html(build_today_prediction_html(result), height=580, scrolling=True)
