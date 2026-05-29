@@ -387,7 +387,7 @@ def _format_percent(value) -> str:
 
 def _render_follow_up(result, ai_provider: str, report_depth: str) -> None:
     st.subheader("继续追问")
-    st.caption("这里会基于当前这份数据底稿继续回答。你也可以在侧边栏输入新代码并重新生成分析。")
+    st.caption("这里会基于当前这份数据底稿继续回答。使用 Gemini 时，追问会启用 AI 自己的 Google Search grounding。")
 
     examples = st.columns(4)
     examples[0].caption("例：明天怎么操作")

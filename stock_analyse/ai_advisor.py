@@ -73,13 +73,22 @@ class AiAdvisor:
         result: AnalysisResult,
         user_question: str | None = None,
         report_depth: str = "专业详细",
+        enable_web_search: bool | None = None,
     ) -> str:
         payload = _analysis_payload(result)
+        use_gemini_search = (
+            self._provider == "gemini"
+            and bool(user_question)
+            and _should_enable_gemini_search_grounding()
+            if enable_web_search is None
+            else self._provider == "gemini" and bool(enable_web_search)
+        )
         prompt = {
             "task": "你是主分析模型。请基于程序收集到的股票、ETF或期货行情、K线、指标、新闻，独立给出下一阶段趋势预测和投资建议。",
             "user_question": user_question or "请给出完整投资分析。",
             "report_depth": report_depth,
             "analysis_payload": payload,
+            "interactive_search_instruction": _interactive_search_instruction(use_gemini_search),
             "asset_specific_framework": _asset_specific_framework(result.quote.asset_type),
             "etf_data_requirements": [
                 "如果标的类型是 ETF，且 analysis_payload.fundamental_data.realtime_detail 存在，必须引用 IOPV实时估值、基金折价率、成交额、换手率、最新份额、流通市值/总市值、资金流向等字段。",
@@ -100,6 +109,8 @@ class AiAdvisor:
             ],
             "output_requirements": [
                 "必须使用中文，结构清晰，像一位优秀投资者给普通投资者解释。",
+                "如果 user_question 要求你搜索、查找、核实、补充仓单/库存/仓储/现货/基差/新闻等最新信息，且 interactive_search_instruction 显示搜索工具已启用，你必须先使用搜索工具，而不是只说原始底稿缺失。",
+                "搜索后必须说明你搜索/核实到了什么、来源链接是什么、数据时间是什么、可信度如何，以及它如何改变或不改变原分析。",
                 "必须先给一句话结论，再给操作计划。",
                 "必须按以下标题输出：一句话结论、当前趋势结构、关键支撑/压力、风险收益比、仓位建议、不同投资者方案、看错条件、下一阶段观察清单。",
                 "如果是股票，必须增加“股票100分质量评分”章节，按盈利能力20分、成长能力20分、现金流质量15分、估值水平20分、财务安全10分、行业与竞争10分、技术面与市场情绪5分分别打分，并给出总分。",
@@ -125,11 +136,18 @@ class AiAdvisor:
                 "如果数据来源是最新日线而非实时行情，需要明确说明实时性限制。",
             ],
         }
+        if user_question:
+            prompt = _follow_up_prompt(
+                result=result,
+                user_question=user_question,
+                report_depth=report_depth,
+                enable_search=use_gemini_search,
+            )
         prompt_text = json.dumps(prompt, ensure_ascii=False)
 
         try:
             if self._provider == "gemini":
-                text = self._gemini_rest_api(prompt_text)
+                text = self._gemini_rest_api(prompt_text, enable_google_search=use_gemini_search)
             elif self._provider == "openai":
                 text = self._responses_api(prompt_text)
             else:
@@ -178,7 +196,7 @@ class AiAdvisor:
             return "\n".join(part for part in parts if part)
         return str(content or "")
 
-    def _gemini_rest_api(self, prompt_text: str) -> str:
+    def _gemini_rest_api(self, prompt_text: str, enable_google_search: bool = False) -> str:
         payload = {
             "systemInstruction": {
                 "parts": [{"text": _system_prompt()}],
@@ -194,6 +212,8 @@ class AiAdvisor:
                 "topP": 0.9,
             },
         }
+        if enable_google_search:
+            payload["tools"] = [{"google_search": {}}]
 
         models = (self._model,)
         if self._model == "gemini-2.5-flash":
@@ -222,14 +242,7 @@ class AiAdvisor:
                     continue
                 if response.status_code < 400:
                     data = response.json()
-                    parts: list[str] = []
-                    for candidate in data.get("candidates", []):
-                        content = candidate.get("content") or {}
-                        for part in content.get("parts", []):
-                            text = part.get("text")
-                            if text:
-                                parts.append(text)
-                    return "\n".join(parts)
+                    return _gemini_response_text(data)
 
                 last_error = _safe_http_error(response)
                 if response.status_code not in {429, 500, 502, 503, 504}:
@@ -262,14 +275,7 @@ class AiAdvisor:
 
             if response.status_code < 400:
                 data = response.json()
-                parts: list[str] = []
-                for candidate in data.get("candidates", []):
-                    content = candidate.get("content") or {}
-                    for part in content.get("parts", []):
-                        text = part.get("text")
-                        if text:
-                            parts.append(text)
-                return "__OK__:" + "\n".join(parts)
+                return "__OK__:" + _gemini_response_text(data)
 
             last_error = _safe_http_error(response)
             if response.status_code not in {429, 500, 502, 503, 504}:
@@ -429,6 +435,86 @@ def _should_try_gemini_direct_fallback() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _should_enable_gemini_search_grounding() -> bool:
+    value = os.getenv("GEMINI_SEARCH_GROUNDING", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _interactive_search_instruction(enabled: bool) -> dict:
+    if enabled:
+        return {
+            "enabled": True,
+            "tool": "Gemini Grounding with Google Search",
+            "instruction": (
+                "本次追问已启用 Gemini 内置 Google Search 工具。"
+                "当用户要求搜索、核实、补充最新库存/仓单/仓储量/现货/基差/新闻时，"
+                "你应自己调用搜索工具，并基于搜索来源回答。"
+            ),
+            "preferred_sources_for_china_futures": [
+                "广期所/交易所公告",
+                "SMM上海有色",
+                "Mysteel",
+                "生意社",
+                "东方财富期货资讯",
+                "期货公司研报",
+            ],
+        }
+    return {
+        "enabled": False,
+        "instruction": "本次未启用模型搜索工具，只能基于 analysis_payload 中已有数据回答。",
+    }
+
+
+def _gemini_response_text(data: dict) -> str:
+    parts: list[str] = []
+    grounding_chunks: list[dict] = []
+    search_queries: list[str] = []
+
+    for candidate in data.get("candidates", []):
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []):
+            text = part.get("text")
+            if text:
+                parts.append(text)
+
+        metadata = candidate.get("groundingMetadata") or candidate.get("grounding_metadata") or {}
+        search_queries.extend(str(item) for item in metadata.get("webSearchQueries", []) if item)
+        grounding_chunks.extend(metadata.get("groundingChunks", []) or [])
+
+    summary = _grounding_summary(search_queries, grounding_chunks)
+    if summary:
+        parts.append(summary)
+    return "\n".join(parts)
+
+
+def _grounding_summary(search_queries: list[str], grounding_chunks: list[dict]) -> str:
+    unique_queries = list(dict.fromkeys(query.strip() for query in search_queries if query.strip()))
+    sources = []
+    seen_urls: set[str] = set()
+    for chunk in grounding_chunks:
+        web = chunk.get("web") or {}
+        url = str(web.get("uri") or "").strip()
+        title = str(web.get("title") or url or "").strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        sources.append((title, url))
+        if len(sources) >= 8:
+            break
+
+    if not unique_queries and not sources:
+        return ""
+
+    lines = ["", "---", "搜索依据（Gemini Google Search）:"]
+    if unique_queries:
+        lines.append("搜索词:")
+        lines.extend(f"- {query}" for query in unique_queries[:8])
+    if sources:
+        lines.append("来源:")
+        lines.extend(f"- [{title}]({url})" for title, url in sources)
+    return "\n".join(lines)
+
+
 def _safe_http_error(response) -> str:
     try:
         payload = response.json()
@@ -484,5 +570,80 @@ def _analysis_payload(result: AnalysisResult) -> dict:
                 "summary": item.summary,
             }
             for item in result.global_news[:8]
+        ],
+    }
+
+
+def _follow_up_prompt(
+    result: AnalysisResult,
+    user_question: str,
+    report_depth: str,
+    enable_search: bool,
+) -> dict:
+    return {
+        "task": "这是用户在完整报告之后的继续追问。请直接解决用户的新问题，不要重新套完整投资报告模板。",
+        "user_question": user_question,
+        "report_depth": report_depth,
+        "interactive_search_instruction": _interactive_search_instruction(enable_search),
+        "current_context": _compact_follow_up_context(result),
+        "answer_rules": [
+            "优先回答用户这次问的具体问题，不要机械输出“一句话结论/趋势结构/仓位建议”等完整报告模板，除非用户明确要求重新完整分析。",
+            "如果用户要求你搜索、查找、核实、补充仓单/库存/仓储量/现货/基差/新闻等最新信息，且搜索工具已启用，你必须自己使用搜索工具核实。",
+            "搜索后必须写清楚：你搜索到的数据是什么、数据日期是什么、来源链接是什么、来源可信度如何。",
+            "如果搜索结果之间冲突，不要强行给唯一答案；请列出不同来源并说明哪个更可信。",
+            "如果搜索后仍找不到可靠数据，要说明你搜索了哪些方向，并给出下一步应该查的官方或专业来源。",
+            "回答要像专业投资助手：先给结论，再给证据，再说对原交易判断的影响。",
+            "不要说“输入数据缺失所以无法分析”就结束；如果搜索工具可用，应先尝试搜索。",
+            "不要承诺收益，不要把搜索结果当成单一买卖信号。",
+        ],
+    }
+
+
+def _compact_follow_up_context(result: AnalysisResult) -> dict:
+    fundamental = result.fundamental_data or {}
+    professional = fundamental.get("professional_context") or {}
+    quant = fundamental.get("quant_context") or {}
+    signal = quant.get("signal") or {}
+    return {
+        "symbol": result.quote.symbol,
+        "name": result.quote.name,
+        "asset_type": result.quote.asset_type,
+        "price": result.quote.price,
+        "change_pct": result.quote.change_pct,
+        "market_phase": result.market_phase,
+        "data_source": result.data_source,
+        "trend": result.trend,
+        "risk_level": result.risk_level,
+        "score": result.score,
+        "support_levels": result.support_levels,
+        "resistance_levels": result.resistance_levels,
+        "prediction": {
+            "horizon": result.prediction.horizon,
+            "bias": result.prediction.bias,
+            "confidence": result.prediction.confidence,
+            "strategy": result.prediction.strategy,
+            "invalidation": result.prediction.invalidation,
+        },
+        "warnings": result.warnings,
+        "known_missing_or_failed": fundamental.get("missing_or_failed", []),
+        "futures_basis_summary": professional.get("basis_summary"),
+        "futures_position_summary": professional.get("position_summary"),
+        "professional_level_plan": professional.get("level_plan"),
+        "quant_summary": {
+            "available": quant.get("available"),
+            "signal": signal.get("label"),
+            "factor_score": quant.get("factor_score"),
+            "confidence": quant.get("confidence"),
+            "event_backtest_interpretation": (quant.get("event_backtest") or {}).get("interpretation"),
+            "strategy_backtest_interpretation": (quant.get("strategy_backtest") or {}).get("interpretation"),
+        },
+        "recent_news": [
+            {
+                "title": item.title,
+                "source": item.source,
+                "published_at": item.published_at,
+                "url": item.url,
+            }
+            for item in result.stock_news[:5]
         ],
     }
