@@ -76,9 +76,10 @@ class AiAdvisor:
         enable_web_search: bool | None = None,
     ) -> str:
         payload = _analysis_payload(result)
+        missing_search = _missing_data_search_instruction(result)
         use_gemini_search = (
             self._provider == "gemini"
-            and bool(user_question)
+            and (bool(user_question) or missing_search["should_search"])
             and _should_enable_gemini_search_grounding()
             if enable_web_search is None
             else self._provider == "gemini" and bool(enable_web_search)
@@ -89,6 +90,7 @@ class AiAdvisor:
             "report_depth": report_depth,
             "analysis_payload": payload,
             "interactive_search_instruction": _interactive_search_instruction(use_gemini_search),
+            "missing_data_search_instruction": missing_search,
             "asset_specific_framework": _asset_specific_framework(result.quote.asset_type),
             "etf_data_requirements": [
                 "如果标的类型是 ETF，且 analysis_payload.fundamental_data.realtime_detail 存在，必须引用 IOPV实时估值、基金折价率、成交额、换手率、最新份额、流通市值/总市值、资金流向等字段。",
@@ -110,6 +112,8 @@ class AiAdvisor:
             "output_requirements": [
                 "必须使用中文，结构清晰，像一位优秀投资者给普通投资者解释。",
                 "如果 user_question 要求你搜索、查找、核实、补充仓单/库存/仓储/现货/基差/新闻等最新信息，且 interactive_search_instruction 显示搜索工具已启用，你必须先使用搜索工具，而不是只说原始底稿缺失。",
+                "如果 missing_data_search_instruction.should_search 为 true，且 interactive_search_instruction 显示搜索工具已启用，你必须先尝试用搜索工具补齐这些缺失数据，再生成完整报告。",
+                "如果缺失项属于分钟线/实时盘口等搜索工具无法可靠替代的数据，可以明确说明不能用网页搜索替代，不要编造。",
                 "搜索后必须说明你搜索/核实到了什么、来源链接是什么、数据时间是什么、可信度如何，以及它如何改变或不改变原分析。",
                 "必须先给一句话结论，再给操作计划。",
                 "必须按以下标题输出：一句话结论、当前趋势结构、关键支撑/压力、风险收益比、仓位建议、不同投资者方案、看错条件、下一阶段观察清单。",
@@ -463,6 +467,123 @@ def _interactive_search_instruction(enabled: bool) -> dict:
         "enabled": False,
         "instruction": "本次未启用模型搜索工具，只能基于 analysis_payload 中已有数据回答。",
     }
+
+
+def _missing_data_search_instruction(result: AnalysisResult) -> dict:
+    items = _collect_missing_items(result)
+    searchable = [item for item in items if _is_searchable_missing_item(item)]
+    non_searchable = [item for item in items if item not in searchable]
+    queries = _missing_data_queries(result, searchable)
+    return {
+        "should_search": bool(searchable),
+        "searchable_missing_items": searchable[:8],
+        "non_searchable_missing_items": non_searchable[:6],
+        "suggested_queries": queries[:8],
+        "instruction": (
+            "这些缺失项适合用 Gemini Google Search grounding 补充。"
+            "请优先搜索官方交易所、SMM、Mysteel、生意社、东方财富、财联社、期货公司研报等来源，"
+            "并说明搜索结果是否足以补齐底稿。"
+            if searchable
+            else "本次没有发现适合用网页搜索自动补齐的关键缺失项。"
+        ),
+    }
+
+
+def _collect_missing_items(result: AnalysisResult) -> list[str]:
+    items: list[str] = []
+    fundamental = result.fundamental_data or {}
+
+    def add(value) -> None:
+        if value is None:
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+            return
+        text = str(value).strip()
+        if text:
+            items.append(text)
+
+    add(fundamental.get("missing_or_failed"))
+    for key in ("professional_context",):
+        context = fundamental.get(key) or {}
+        if isinstance(context, dict):
+            basis = context.get("basis_summary") or {}
+            if isinstance(basis, dict) and basis.get("available") is False:
+                add(basis.get("instruction"))
+    for warning in result.warnings:
+        add(warning)
+
+    deduped = []
+    seen = set()
+    for item in items:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
+def _is_searchable_missing_item(item: str) -> bool:
+    text = item.lower()
+    positive = (
+        "仓单",
+        "库存",
+        "仓储",
+        "现货",
+        "基差",
+        "升贴水",
+        "产业",
+        "供需",
+        "新闻",
+        "公告",
+        "研报",
+        "持仓排名",
+        "席位",
+        "etf持仓",
+        "行业配置",
+        "iopv",
+        "折溢价",
+    )
+    negative = (
+        "分钟线",
+        "实时行情获取失败",
+        "盘中预测降级",
+        "api",
+        "connection",
+        "remote disconnected",
+        "timeout",
+    )
+    return any(word in text for word in positive) and not any(word in text for word in negative)
+
+
+def _missing_data_queries(result: AnalysisResult, searchable_items: list[str]) -> list[str]:
+    if not searchable_items:
+        return []
+    symbol = result.quote.symbol
+    name = result.quote.name
+    asset_type = result.quote.asset_type
+    queries = []
+    if asset_type == "futures":
+        root = "".join(char for char in symbol.upper() if char.isalpha())
+        base = f"{symbol} {name}".strip()
+        queries.extend(
+            [
+                f"{base} 仓单 库存 最新",
+                f"{base} 现货 基差 最新",
+                f"{root} 期货 仓单 库存 广期所",
+                f"SMM {name} 库存",
+                f"Mysteel {name} 库存",
+            ]
+        )
+    elif asset_type == "etf":
+        queries.extend([f"{symbol} {name} IOPV 折溢价", f"{symbol} {name} 持仓 行业配置"])
+    else:
+        queries.extend([f"{symbol} {name} 财报 估值 现金流", f"{symbol} {name} 最新公告 新闻"])
+
+    for item in searchable_items[:3]:
+        queries.append(f"{symbol} {name} {item[:24]}")
+    return list(dict.fromkeys(query for query in queries if query.strip()))
 
 
 def _gemini_response_text(data: dict) -> str:
