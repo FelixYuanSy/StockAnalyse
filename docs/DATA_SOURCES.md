@@ -41,6 +41,10 @@ ETF 使用的主要数据：
 | 实时行情 | `fund_etf_spot_em` | 当前价、涨跌幅、成交额 |
 | 历史 K 线 | `fund_etf_hist_em` | 趋势、波动、技术指标 |
 | 备用 K 线 | `fund_etf_hist_sina` | 主接口失败时兜底 |
+| IOPV/折溢价 | `fund_etf_spot_em` | IOPV实时估值、基金折价率、最新份额、市值 |
+| 持仓明细 | `fund_portfolio_hold_em` | 最近一期股票持仓和集中度 |
+| 行业配置 | `fund_portfolio_industry_allocation_em` | 最近一期行业占比 |
+| 净值历史 | `fund_etf_fund_info_em` | 单位净值、累计净值、日增长率 |
 | 市场新闻 | `stock_info_global_em` | 市场背景 |
 | 网页新闻 | `news_searcher.py` | 指数、板块、宏观新闻补充 |
 
@@ -50,7 +54,8 @@ ETF 报告重点不是公司财务，而是：
 - 成交额和流动性。
 - 行业或宽基指数估值。
 - 成分股集中度。
-- 折溢价数据可用性。
+- IOPV、折溢价、最新份额和市值。
+- 最近一期持仓和行业配置。
 - 技术趋势和资金情绪。
 
 ## 3. 期货数据

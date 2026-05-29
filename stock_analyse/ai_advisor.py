@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from urllib.parse import urlparse
 from typing import Literal
@@ -80,6 +81,19 @@ class AiAdvisor:
             "report_depth": report_depth,
             "analysis_payload": payload,
             "asset_specific_framework": _asset_specific_framework(result.quote.asset_type),
+            "etf_data_requirements": [
+                "如果标的类型是 ETF，且 analysis_payload.fundamental_data.realtime_detail 存在，必须引用 IOPV实时估值、基金折价率、成交额、换手率、最新份额、流通市值/总市值、资金流向等字段。",
+                "如果 analysis_payload.fundamental_data.top_holdings 存在，必须说明最近一期前十大或前十五大持仓、权重集中度和主要成分股风险。",
+                "如果 analysis_payload.fundamental_data.industry_allocation 存在，必须说明行业配置、第一大行业占比和行业集中风险。",
+                "只有在对应字段确实缺失时，才提示 ETF 持仓、IOPV、折溢价缺失；不要在字段已经存在时继续说暂未接入。",
+            ],
+            "quant_requirements": [
+                "如果 analysis_payload.fundamental_data.quant_context.available 为 true，必须增加“量化因子与历史相似信号”章节。",
+                "必须引用 quant_context.signal.label、factor_score、confidence、factors 和 event_backtest。",
+                "必须说明未来1日/3日/5日相似信号回测的样本数、胜率、平均收益、最大亏损；样本数不足时要降低结论权重。",
+                "不能把轻量回测说成确定预测；必须说明该回测不含交易成本、滑点、样本外验证和仓位管理。",
+                "最终仓位建议必须同时考虑AI判断、本地技术结构、量化因子分和回测胜率。",
+            ],
             "output_requirements": [
                 "必须使用中文，结构清晰，像一位优秀投资者给普通投资者解释。",
                 "必须先给一句话结论，再给操作计划。",
@@ -186,14 +200,21 @@ class AiAdvisor:
                 "https://generativelanguage.googleapis.com/v1beta/"
                 f"models/{model}:generateContent"
             )
+            network_error = False
             for attempt in range(3):
-                response = self._requests.post(
-                    url,
-                    params={"key": self._api_key},
-                    json=payload,
-                    proxies=_requests_proxies(),
-                    timeout=self._timeout,
-                )
+                try:
+                    response = self._requests.post(
+                        url,
+                        params={"key": self._api_key},
+                        json=payload,
+                        proxies=_requests_proxies(),
+                        timeout=self._timeout,
+                    )
+                except Exception as exc:
+                    network_error = True
+                    last_error = _redact_sensitive_text(str(exc))
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
                 if response.status_code < 400:
                     data = response.json()
                     parts: list[str] = []
@@ -210,7 +231,45 @@ class AiAdvisor:
                     break
                 time.sleep(1.5 * (attempt + 1))
 
+            if network_error and _should_try_gemini_direct_fallback():
+                direct_error = self._try_gemini_direct(url, payload)
+                if direct_error.startswith("__OK__:"):
+                    return direct_error.removeprefix("__OK__:")
+                last_error = direct_error
+
         raise AiAdvisorError(f"GEMINI API 请求失败: {last_error}")
+
+    def _try_gemini_direct(self, url: str, payload: dict) -> str:
+        last_error = ""
+        for attempt in range(2):
+            try:
+                response = self._requests.post(
+                    url,
+                    params={"key": self._api_key},
+                    json=payload,
+                    proxies={"http": "", "https": ""},
+                    timeout=min(self._timeout, 60),
+                )
+            except Exception as exc:
+                last_error = _redact_sensitive_text(str(exc))
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+            if response.status_code < 400:
+                data = response.json()
+                parts: list[str] = []
+                for candidate in data.get("candidates", []):
+                    content = candidate.get("content") or {}
+                    for part in content.get("parts", []):
+                        text = part.get("text")
+                        if text:
+                            parts.append(text)
+                return "__OK__:" + "\n".join(parts)
+
+            last_error = _safe_http_error(response)
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                break
+        return f"代理连接失败后尝试直连也失败: {last_error}"
 
     @staticmethod
     def _resolve_provider(provider: Provider) -> Literal["openai", "gemini", "deepseek"]:
@@ -306,7 +365,7 @@ def _asset_specific_framework(asset_type: str) -> dict:
 
 
 def _friendly_ai_error(exc: Exception, provider: str) -> str:
-    message = str(exc)
+    message = _redact_sensitive_text(str(exc))
     name = provider.upper()
     proxy_names = ("AI_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
     has_proxy = any(os.getenv(item) for item in proxy_names)
@@ -335,6 +394,20 @@ def _friendly_ai_error(exc: Exception, provider: str) -> str:
     return f"{name} API 请求失败: {message}"
 
 
+def _redact_sensitive_text(value: str) -> str:
+    text = value or ""
+    text = re.sub(r"([?&]key=)[^&\s)'\"]+", r"\1***", text)
+    text = re.sub(r"(Bearer\s+)[A-Za-z0-9._\-]+", r"\1***", text)
+    text = re.sub(r"sk-[A-Za-z0-9_\-]{12,}", "sk-***", text)
+    text = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "AIza***", text)
+
+    for env_name in ("OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"):
+        secret = os.getenv(env_name)
+        if secret:
+            text = text.replace(secret, f"{env_name}=***")
+    return text
+
+
 def _requests_proxies() -> dict[str, str] | None:
     ai_proxy = os.getenv("AI_PROXY")
     if ai_proxy:
@@ -346,13 +419,18 @@ def _requests_proxies() -> dict[str, str] | None:
     return None
 
 
+def _should_try_gemini_direct_fallback() -> bool:
+    value = os.getenv("GEMINI_DIRECT_FALLBACK", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
 def _safe_http_error(response) -> str:
     try:
         payload = response.json()
         message = payload.get("error", {}).get("message") or payload
     except ValueError:
         message = response.text[:500]
-    return f"HTTP {response.status_code}: {message}"
+    return _redact_sensitive_text(f"HTTP {response.status_code}: {message}")
 
 
 def _analysis_payload(result: AnalysisResult) -> dict:

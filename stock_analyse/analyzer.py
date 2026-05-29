@@ -15,6 +15,7 @@ from .models import (
     StockQuote,
     TrendLabel,
 )
+from .quant import build_quant_context
 
 
 class StockAnalyzer:
@@ -61,6 +62,15 @@ class StockAnalyzer:
             round(float(recent_20["high"].max()), 2),
             round(float(recent_60["high"].max()), 2),
         )
+        enriched_fundamental_data = dict(fundamental_data or {})
+        enriched_fundamental_data["quant_context"] = build_quant_context(
+            history=data,
+            quote=quote,
+            asset_type=quote.asset_type,
+            support_levels=support_levels,
+            resistance_levels=resistance_levels,
+            fundamental_data=enriched_fundamental_data,
+        )
 
         score = max(0, min(100, score))
         trend = self._trend_label(score)
@@ -102,7 +112,7 @@ class StockAnalyzer:
                 "daily_kline_tail": self._records(data.tail(30), "date"),
                 "intraday_kline_tail": self._records(intraday.tail(24), "datetime") if intraday is not None else [],
             },
-            fundamental_data=fundamental_data or {},
+            fundamental_data=enriched_fundamental_data,
         )
 
     @staticmethod

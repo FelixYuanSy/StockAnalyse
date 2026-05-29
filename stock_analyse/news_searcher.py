@@ -179,11 +179,11 @@ class WebNewsSearcher:
         return items
 
     def _proxies(self) -> dict[str, str] | None:
-        explicit = os.getenv("NEWS_SEARCH_PROXY")
+        explicit = os.getenv("NEWS_SEARCH_PROXY") or os.getenv("AI_PROXY")
         if explicit:
             return {"http": explicit, "https": explicit}
 
-        use_system_proxy = os.getenv("NEWS_SEARCH_USE_SYSTEM_PROXY", "true").strip().lower()
+        use_system_proxy = os.getenv("NEWS_SEARCH_USE_SYSTEM_PROXY", "false").strip().lower()
         if use_system_proxy in {"0", "false", "no", "off"}:
             return {"http": "", "https": ""}
         return None

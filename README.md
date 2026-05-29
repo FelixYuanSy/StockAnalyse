@@ -88,6 +88,7 @@ stock_analyse/
   data_provider.py              AKShare 数据获取和字段标准化
   news_searcher.py              免费网页新闻搜索
   analyzer.py                   技术指标、评分、预测底稿
+  quant.py                      轻量量化因子和历史相似信号回测
   professional.py               专业投研上下文：基差、持仓、风险收益比
   ai_advisor.py                 Gemini/DeepSeek/OpenAI 调用和 Prompt
   charting.py                   Plotly 图表

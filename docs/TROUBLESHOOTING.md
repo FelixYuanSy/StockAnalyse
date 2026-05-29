@@ -53,6 +53,16 @@ AI_PROXY=http://127.0.0.1:7890
 AI_USE_SYSTEM_PROXY=false
 ```
 
+如果错误里出现 `ProxyError`、`Remote end closed connection without response`，通常说明代理软件虽然端口存在，但当前节点或规则没有成功转发 Gemini 请求。可以尝试：
+
+- 确认代理软件正在运行。
+- 确认 `.env` 中 `AI_PROXY` 是实际可用端口，例如 `http://127.0.0.1:7890`。
+- 在代理软件中确认 Google/Gemini 域名走代理。
+- 换一个代理节点后重试。
+- 临时切换 `AI Provider` 到 DeepSeek。
+
+程序会对错误信息里的 API key 做脱敏。如果你曾经在截图、日志或聊天里暴露过真实 key，请立即到对应平台控制台轮换。
+
 ## 3. Gemini 返回为空
 
 可能原因：
@@ -124,8 +134,27 @@ OPENAI_API_KEY=你的OpenAIKey
 - 关键词过窄。
 - 新闻源被网络环境拦截。
 - 新闻时间太旧，被程序过滤。
+- 系统代理端口失效，例如系统里残留 `ALL_PROXY=http://127.0.0.1:7897`，但实际代理软件使用 `7890`。
 
 当前程序会同时使用 AKShare 新闻和网页新闻搜索。HTML 报告会显示新闻标题、来源、时间和链接。遇到新闻缺失时，建议手动打开财经网站核对。
+
+如果新闻搜索报错里出现 `Unable to connect to proxy`，请在 `.env` 中设置：
+
+```text
+NEWS_SEARCH_PROXY=http://127.0.0.1:7890
+```
+
+如果你已经设置了：
+
+```text
+AI_PROXY=http://127.0.0.1:7890
+```
+
+新闻搜索会自动复用 `AI_PROXY`。只有当你的系统代理变量确定正确时，才建议设置：
+
+```text
+NEWS_SEARCH_USE_SYSTEM_PROXY=true
+```
 
 ## 8. 报告里的价格和你看到的软件不同
 

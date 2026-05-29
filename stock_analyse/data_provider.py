@@ -380,13 +380,89 @@ class AkshareDataProvider:
         raise DataProviderError(f"最近 {lookback_days} 天无 {code} {rank_type}排名: {'; '.join(errors[-3:])}")
 
     def _get_etf_fundamental_data(self, code: str) -> dict:
-        return {
+        data: dict[str, Any] = {
             "framework": "etf_tracking_score",
             "notes": [
-                "ETF报告应重点看跟踪指数方向、成分行业、成交额、流动性、折溢价/IOPV数据可用性和市场风格。",
+                "ETF报告应重点看跟踪指数方向、成分行业、成交额、流动性、折溢价/IOPV、持仓集中度和市场风格。",
             ],
-            "missing_or_failed": ["暂未接入ETF持仓、IOPV和折溢价数据源。"],
+            "missing_or_failed": [],
         }
+
+        try:
+            with self._network_context():
+                spot = self._ak.fund_etf_spot_em()
+            row = spot.loc[spot["代码"].astype(str) == code]
+            if row.empty:
+                data["missing_or_failed"].append(f"ETF实时扩展行情中未找到 {code}")
+            else:
+                data["realtime_detail"] = self._frame_records(row.head(1))[0]
+        except Exception as exc:
+            data["missing_or_failed"].append(f"ETF实时扩展行情获取失败: {exc}")
+
+        try:
+            with self._network_context():
+                nav = self._ak.fund_etf_fund_info_em(fund=code)
+            data["nav_history_tail"] = self._frame_tail_records(nav, rows=8)
+        except Exception as exc:
+            data["missing_or_failed"].append(f"ETF净值历史获取失败: {exc}")
+
+        try:
+            data["top_holdings"] = self._get_recent_fund_portfolio_hold(code)
+        except DataProviderError as exc:
+            data["missing_or_failed"].append(str(exc))
+
+        try:
+            data["industry_allocation"] = self._get_recent_fund_industry_allocation(code)
+        except DataProviderError as exc:
+            data["missing_or_failed"].append(str(exc))
+
+        if not data["missing_or_failed"]:
+            data["missing_or_failed"] = []
+        return data
+
+    def _get_recent_fund_portfolio_hold(self, code: str, lookback_years: int = 3) -> dict:
+        errors: list[str] = []
+        for year in range(date.today().year, date.today().year - lookback_years, -1):
+            try:
+                with self._network_context():
+                    df = self._ak.fund_portfolio_hold_em(symbol=code, date=str(year))
+                if df.empty:
+                    errors.append(f"{year}: empty")
+                    continue
+                latest_period = str(df.iloc[0].get("季度", year)) if "季度" in df.columns else str(year)
+                if "季度" in df.columns:
+                    df = df.loc[df["季度"].astype(str) == latest_period]
+                return {
+                    "data_year": year,
+                    "latest_period": latest_period,
+                    "records": self._frame_head_records(df, rows=15),
+                    "source": "天天基金-基金持仓",
+                }
+            except Exception as exc:
+                errors.append(f"{year}: {exc}")
+        raise DataProviderError(f"最近 {lookback_years} 年无 {code} ETF持仓数据: {'; '.join(errors[-3:])}")
+
+    def _get_recent_fund_industry_allocation(self, code: str, lookback_years: int = 3) -> dict:
+        errors: list[str] = []
+        for year in range(date.today().year, date.today().year - lookback_years, -1):
+            try:
+                with self._network_context():
+                    df = self._ak.fund_portfolio_industry_allocation_em(symbol=code, date=str(year))
+                if df.empty:
+                    errors.append(f"{year}: empty")
+                    continue
+                latest_date = str(df.iloc[0].get("截止时间", year)) if "截止时间" in df.columns else str(year)
+                if "截止时间" in df.columns:
+                    df = df.loc[df["截止时间"].astype(str) == latest_date]
+                return {
+                    "data_year": year,
+                    "latest_date": latest_date,
+                    "records": self._frame_head_records(df, rows=12),
+                    "source": "天天基金-行业配置",
+                }
+            except Exception as exc:
+                errors.append(f"{year}: {exc}")
+        raise DataProviderError(f"最近 {lookback_years} 年无 {code} ETF行业配置数据: {'; '.join(errors[-3:])}")
 
     def _get_futures_news(self, code: str, limit: int = 5) -> tuple[NewsItem, ...]:
         root = self._futures_root(code)
